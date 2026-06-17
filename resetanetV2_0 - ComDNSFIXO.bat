@@ -1,97 +1,75 @@
 @echo off
-chcp 65001 >nul
+setlocal enabledelayedexpansion
+
+:: Auto-elevacao para administrador
+net session >nul 2>&1
+if %errorlevel% NEQ 0 (
+    powershell -Command "Start-Process '%~f0' -Verb RunAs"
+    exit /b
+)
+
 title Resetanet - Corretor de erros de rede
 echo =========================================================
 echo            CORRETOR DE ERROS COMUNS DE REDE
 echo =========================================================
-CLS
 
-:: Verifica se o script está sendo executado como administrador
-net session >nul 2>&1
-if %errorlevel% NEQ 0 (
-    echo Este script precisa ser executado como administrador.
-    echo.
-    echo Para continuar, clique com o botão direito no arquivo e selecione "Executar como administrador".
-    pause
-    exit /b
-)
-
-timeout /t 2 /nobreak >nul
 echo.
-echo Alterando configurações de DNS...
-echo.
+echo Detectando adaptador de rede ativo...
 
-:: Detecta o nome do adaptador de rede ativo (suporte a PT e EN)
-for /f "tokens=2 delims=:" %%a in ('netsh interface show interface ^| findstr /i "Conectado Connected"') do set "adapter=%%a"
-:: Remove espaço inicial do nome do adaptador
-set "adapter=%adapter:~1%"
+set "adapter="
+:: Detecta adaptador fisico ativo (espacos duplos evitam match em "Desconectado")
+for /f "tokens=4*" %%a in ('netsh interface show interface ^| findstr "  Conectado  " ^| findstr /v /i "VMware Loopback vEthernet"') do if "!adapter!"=="" set "adapter=%%a %%b"
+if "%adapter%"=="" for /f "tokens=4*" %%a in ('netsh interface show interface ^| findstr "  Connected  " ^| findstr /v /i "VMware Loopback vEthernet"') do if "!adapter!"=="" set "adapter=%%a %%b"
+:: Remove espaco final caso %%b seja vazio
+if "%adapter:~-1%"==" " set "adapter=%adapter:~0,-1%"
 
 if "%adapter%"=="" (
-    echo Nenhum adaptador de rede ativo encontrado.
+    echo.
+    echo ERRO: Nenhum adaptador de rede ativo encontrado.
+    echo Verifique se ha uma conexao de rede ativa e tente novamente.
     pause
     exit /b
 )
 
-echo Adaptador de rede ativo: %adapter%
+echo Adaptador ativo: %adapter%
+echo.
 
-:: Altera o DNS para o primário 1.1.1.1 e o secundário 8.8.8.8
-echo Configurando DNS primário 1.1.1.1 e DNS secundário 8.8.8.8...
+:: DNS fixo
+echo Configurando DNS 1.1.1.1 e 8.8.8.8...
 netsh interface ip set dns name="%adapter%" static 1.1.1.1
 netsh interface ip add dns name="%adapter%" 8.8.8.8 index=2
 
 echo.
-echo Redefinindo configurações de rede e limpando cache DNS...
+echo Redefinindo configuracoes de rede...
 echo.
 
-:: Reinicia o adaptador de rede
-echo Desconectando o adaptador de rede...
-ipconfig /release "%adapter%"
-if %errorlevel% NEQ 0 (
-    echo Erro ao desconectar o adaptador de rede.
-    pause
-    exit /b
-)
-echo Aguardando 5 segundos...
-timeout /t 5 /nobreak >nul
-echo Reconectando o adaptador de rede...
-ipconfig /renew "%adapter%"
-if %errorlevel% NEQ 0 (
-    echo Erro ao reconectar o adaptador de rede.
-    pause
-    exit /b
-)
-
-:: Limpa o cache DNS
+:: Flush DNS
 echo Limpando cache DNS...
 ipconfig /flushdns
 if %errorlevel% NEQ 0 (
-    echo Erro ao limpar o cache DNS.
+    echo Erro ao limpar cache DNS.
     pause
     exit /b
 )
 
-:: Reseta o Winsock
-echo Resetando o Winsock...
+:: Winsock
+echo Resetando Winsock...
 netsh winsock reset
 if %errorlevel% NEQ 0 (
-    echo Erro ao resetar o Winsock.
+    echo Erro ao resetar Winsock.
     pause
     exit /b
 )
 
-:: Reseta o TCP/IP
-echo Resetando o TCP/IP...
-netsh int ip reset
-if %errorlevel% NEQ 0 (
-    echo Erro ao resetar o TCP/IP.
-    pause
-    exit /b
-)
+:: TCP/IP
+echo Resetando TCP/IP...
+netsh int ip reset >nul 2>&1
+echo Reset TCP/IP concluido.
 
-:: Reseta o Firewall para o padrão — remove TODAS as regras personalizadas
+:: Firewall
 echo.
-echo AVISO: O próximo passo vai resetar o Firewall do Windows para o padrão de fábrica.
-echo Todas as regras personalizadas serão removidas.
+echo AVISO: O proximo passo reseta o Firewall para o padrao de fabrica.
+echo Todas as regras personalizadas serao removidas.
 echo Pressione qualquer tecla para continuar ou feche a janela para cancelar.
 pause
 netsh advfirewall reset
@@ -101,39 +79,34 @@ if %errorlevel% NEQ 0 (
     exit /b
 )
 
-:: Reinicia o serviço DHCP (ignora erro se já estiver parado)
-echo Reiniciando o serviço DHCP...
+:: DHCP
+echo Reiniciando servico DHCP...
 net stop dhcp >nul 2>&1
-net start dhcp
-if %errorlevel% NEQ 0 (
-    echo Erro ao iniciar o serviço DHCP.
-    pause
-    exit /b
-)
+net start dhcp >nul 2>&1
+echo Servico DHCP reiniciado.
 
-:: Registra o DNS
+:: Register DNS
 echo Registrando DNS...
 ipconfig /registerdns
 if %errorlevel% NEQ 0 (
-    echo Erro ao registrar o DNS.
+    echo Erro ao registrar DNS.
     pause
     exit /b
 )
 
-:: Reinicia a interface de rede
-echo Reiniciando a interface de rede...
+:: Reinicia interface e renova IP
+echo Reiniciando interface de rede...
 netsh interface set interface "%adapter%" disable
-timeout /t 2 /nobreak >nul
+timeout /t 3 /nobreak >nul
 netsh interface set interface "%adapter%" enable
-if %errorlevel% NEQ 0 (
-    echo Erro ao reiniciar a interface de rede.
-    pause
-    exit /b
-)
+timeout /t 5 /nobreak >nul
+echo Renovando IP...
+ipconfig /renew "%adapter%" >nul 2>&1
+echo IP renovado.
 
 echo.
 echo =========================================================
-echo   Correções de rede concluídas com sucesso.
+echo   Correcoes concluidas com sucesso.
 echo.
 echo   IMPORTANTE: Reinicie o computador para que o reset
 echo   do Winsock e TCP/IP tenham efeito completo.
